@@ -1,9 +1,9 @@
 use axum::response::IntoResponse;
-use sqlx::{sqlite::SqliteArguments, Arguments as _};
+use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement, Value};
 use tempfile::NamedTempFile;
 use tower::ServiceExt;
 
-type Tx<E = axum_sqlx_tx::Error> = axum_sqlx_tx::Tx<sqlx::Sqlite, E>;
+type Tx<E = axum_sea_orm_tx::Error> = axum_sea_orm_tx::Tx<E>;
 
 #[tokio::test]
 async fn commit_on_success() {
@@ -16,10 +16,19 @@ async fn commit_on_success() {
     assert!(response.status.is_success());
     assert_eq!(response.body, "hello huge hackerman");
 
-    let users: Vec<(i32, String)> = sqlx::query_as("SELECT * FROM users")
-        .fetch_all(&pool)
+    let users: Vec<(i32, String)> = pool
+        .query_all(Statement::from_string(
+            pool.get_database_backend(),
+            "SELECT * FROM users".to_string(),
+        ))
         .await
-        .unwrap();
+        .unwrap()
+        .into_iter()
+        .map(|res| {
+            res.try_get_many("", &["id".to_string(), "name".to_string()])
+                .unwrap()
+        })
+        .collect();
     assert_eq!(users, vec![(1, "huge hackerman".to_string())]);
 }
 
@@ -71,7 +80,10 @@ async fn missing_layer() {
     assert!(response.status().is_server_error());
 
     let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
-    assert_eq!(body, format!("{}", axum_sqlx_tx::Error::MissingExtension));
+    assert_eq!(
+        body,
+        format!("{}", axum_sea_orm_tx::Error::MissingExtension)
+    );
 }
 
 #[tokio::test]
@@ -81,7 +93,7 @@ async fn overlapping_extractors() {
     assert!(response.status.is_server_error());
     assert_eq!(
         response.body,
-        format!("{}", axum_sqlx_tx::Error::OverlappingExtractors)
+        format!("{}", axum_sea_orm_tx::Error::OverlappingExtractors)
     );
 }
 
@@ -96,37 +108,44 @@ async fn extractor_error_override() {
 #[tokio::test]
 async fn layer_error_override() {
     let db = NamedTempFile::new().unwrap();
-    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+    let pool = Database::connect(&format!("sqlite://{}", db.path().display()))
         .await
         .unwrap();
 
-    sqlx::query("CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY);")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
+    pool.execute(Statement::from_string(
+        pool.get_database_backend(),
+        "CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY);".to_string(),
+    ))
+    .await
+    .unwrap();
+    pool.execute(Statement::from_string(
+        pool.get_database_backend(),
         r#"
         CREATE TABLE IF NOT EXISTS comments (
             id INT PRIMARY KEY,
             user_id INT,
             FOREIGN KEY (user_id) REFERENCES users(id) DEFERRABLE INITIALLY DEFERRED
-        );"#,
-    )
-    .execute(&pool)
+        );"#
+        .to_string(),
+    ))
     .await
     .unwrap();
 
     let app = axum::Router::new()
         .route(
             "/",
-            axum::routing::get(|mut tx: Tx| async move {
-                sqlx::query("INSERT INTO comments VALUES (random(), random())")
-                    .execute(&mut tx)
-                    .await
-                    .unwrap();
+            axum::routing::get(|tx: Tx| async move {
+                tx.execute(Statement::from_string(
+                    tx.get_database_backend(),
+                    "INSERT INTO comments VALUES (random(), random())".to_string(),
+                ))
+                .await
+                .unwrap();
             }),
         )
-        .layer(axum_sqlx_tx::Layer::new_with_error::<MyError>(pool.clone()));
+        .layer(axum_sea_orm_tx::Layer::new_with_error::<MyError>(
+            pool.clone(),
+        ));
 
     let response = app
         .oneshot(
@@ -145,23 +164,36 @@ async fn layer_error_override() {
 }
 
 async fn insert_user(tx: &mut Tx, id: i32, name: &str) -> (i32, String) {
-    let mut args = SqliteArguments::default();
-    args.add(id);
-    args.add(name);
-    sqlx::query_as_with(
+    tx.query_one(Statement::from_sql_and_values(
+        tx.get_database_backend(),
         r#"INSERT INTO users VALUES (?, ?) RETURNING id, name;"#,
-        args,
-    )
-    .fetch_one(tx)
+        vec![
+            Value::Int(Some(id)),
+            Value::String(Some(Box::new(name.to_string()))),
+        ],
+    ))
     .await
+    .unwrap()
+    .unwrap()
+    .try_get_many("", &["id".to_string(), "name".to_string()])
     .unwrap()
 }
 
-async fn get_users(pool: &sqlx::SqlitePool) -> Vec<(i32, String)> {
-    sqlx::query_as("SELECT * FROM users")
-        .fetch_all(pool)
-        .await
-        .unwrap()
+async fn get_users(pool: &DatabaseConnection) -> Vec<(i32, String)> {
+    pool.query_all(Statement::from_string(
+        pool.get_database_backend(),
+        "SELECT * from users".to_string(),
+    ))
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|res| {
+        (
+            res.try_get("", "id").unwrap(),
+            res.try_get("", "name").unwrap(),
+        )
+    })
+    .collect()
 }
 
 struct Response {
@@ -169,24 +201,26 @@ struct Response {
     body: axum::body::Bytes,
 }
 
-async fn build_app<H, T>(handler: H) -> (NamedTempFile, sqlx::SqlitePool, Response)
+async fn build_app<H, T>(handler: H) -> (NamedTempFile, DatabaseConnection, Response)
 where
     H: axum::handler::Handler<T, axum::body::Body>,
     T: 'static,
 {
     let db = NamedTempFile::new().unwrap();
-    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+    let pool = Database::connect(&format!("sqlite://{}", db.path().display()))
         .await
         .unwrap();
 
-    sqlx::query("CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY, name TEXT);")
-        .execute(&pool)
-        .await
-        .unwrap();
+    pool.execute(Statement::from_string(
+        pool.get_database_backend(),
+        "CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY, name TEXT);".to_string(),
+    ))
+    .await
+    .unwrap();
 
     let app = axum::Router::new()
         .route("/", axum::routing::get(handler))
-        .layer(axum_sqlx_tx::Layer::new(pool.clone()));
+        .layer(axum_sea_orm_tx::Layer::new(pool.clone()));
 
     let response = app
         .oneshot(
@@ -203,10 +237,10 @@ where
     (db, pool, Response { status, body })
 }
 
-struct MyError(axum_sqlx_tx::Error);
+struct MyError(axum_sea_orm_tx::Error);
 
-impl From<axum_sqlx_tx::Error> for MyError {
-    fn from(error: axum_sqlx_tx::Error) -> Self {
+impl From<axum_sea_orm_tx::Error> for MyError {
+    fn from(error: axum_sea_orm_tx::Error) -> Self {
         Self(error)
     }
 }

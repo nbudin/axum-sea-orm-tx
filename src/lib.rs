@@ -1,7 +1,8 @@
-//! Request-bound [SQLx] transactions for [axum].
+//! Request-bound [SeaORM] transactions for [axum].  Forked from [axum-sqlx-tx].
 //!
-//! [SQLx]: https://github.com/launchbadge/sqlx#readme
+//! [SeaORM]: https://github.com/SeaQL/sea-orm
 //! [axum]: https://github.com/tokio-rs/axum#readme
+//! [axum-sqlx-tx]: https://github.com/wasdacraic/axum-sqlx-tx
 //!
 //! [`Tx`] is an `axum` [extractor][axum extractors] for obtaining a transaction that's bound to the
 //! HTTP request. A transaction begins the first time the extractor is used for a request, and is
@@ -10,7 +11,7 @@
 //! responses will cause the transaction to be committed, otherwise it will be rolled back.
 //!
 //! This behaviour is often a sensible default, and using the extractor (e.g. rather than directly
-//! using [`sqlx::Transaction`]s) means you can't forget to commit the transactions!
+//! using [`sea_orm::DatabaseTransaction`]s) means you can't forget to commit the transactions!
 //!
 //! [axum extractors]: https://docs.rs/axum/latest/axum/#extractors
 //! [request extensions]: https://docs.rs/http/latest/http/struct.Extensions.html
@@ -21,11 +22,11 @@
 //!
 //! ```
 //! # async fn foo() {
-//! let pool = /* any sqlx::Pool */
-//! # sqlx::SqlitePool::connect(todo!()).await.unwrap();
+//! let pool = /* any sea_orm::DatabaseConnection */
+//! # sea_orm::Database::connect("").await.unwrap();
 //! let app = axum::Router::new()
 //!     // .route(...)s
-//!     .layer(axum_sqlx_tx::Layer::new(pool));
+//!     .layer(axum_sea_orm_tx::Layer::new(pool));
 //! # axum::Server::bind(todo!()).serve(app.into_make_service());
 //! # }
 //! ```
@@ -33,18 +34,21 @@
 //! You can then simply add [`Tx`] as an argument to your handlers:
 //!
 //! ```
-//! use axum_sqlx_tx::Tx;
-//! use sqlx::Sqlite;
+//! use axum_sea_orm_tx::Tx;
+//! use sea_orm::{ConnectionTrait, TransactionTrait};
 //!
-//! async fn create_user(mut tx: Tx<Sqlite>, /* ... */) {
-//!     // `&mut Tx` implements `sqlx::Executor`
-//!     let user = sqlx::query("INSERT INTO users (...) VALUES (...)")
-//!         .fetch_one(&mut tx)
+//! async fn create_user(mut tx: Tx, /* ... */) {
+//!     // `&mut Tx` implements `sea_orm::ConnectionTrait`
+//!     let user = tx.execute(
+//!             sea_orm::Statement::from_string(
+//!                 tx.get_database_backend(),
+//!                 "INSERT INTO users (...) VALUES (...)".to_string()
+//!             )
+//!         )
 //!         .await
 //!         .unwrap();
 //!
-//!     // `Tx` also implements `Deref<Target = sqlx::Transaction>` and `DerefMut`
-//!     use sqlx::Acquire;
+//!     // `Tx` also implements `Deref<Target = sea_orm::DatabaseTransaction>` and `DerefMut`
 //!     let inner = tx.begin().await.unwrap();
 //!     /* ... */
 //! }
@@ -68,14 +72,13 @@
 //!
 //! ```
 //! use axum::response::IntoResponse;
-//! use axum_sqlx_tx::Tx;
-//! use sqlx::Sqlite;
+//! use axum_sea_orm_tx::Tx;
 //!
-//! struct MyError(axum_sqlx_tx::Error);
+//! struct MyError(axum_sea_orm_tx::Error);
 //!
-//! // Errors must implement From<axum_sqlx_tx::Error>
-//! impl From<axum_sqlx_tx::Error> for MyError {
-//!     fn from(error: axum_sqlx_tx::Error) -> Self {
+//! // Errors must implement From<axum_sea_orm_tx::Error>
+//! impl From<axum_sea_orm_tx::Error> for MyError {
+//!     fn from(error: axum_sea_orm_tx::Error) -> Self {
 //!         Self(error)
 //!     }
 //! }
@@ -90,15 +93,15 @@
 //!
 //! // Change the layer error type
 //! # async fn foo() {
-//! # let pool: sqlx::SqlitePool = todo!();
+//! # let pool: sea_orm::DatabaseConnection = todo!();
 //! let app = axum::Router::new()
 //!     // .route(...)s
-//!     .layer(axum_sqlx_tx::Layer::new_with_error::<MyError>(pool));
+//!     .layer(axum_sea_orm_tx::Layer::new_with_error::<MyError>(pool));
 //! # axum::Server::bind(todo!()).serve(app.into_make_service());
 //! # }
 //!
 //! // Change the extractor error type
-//! async fn create_user(mut tx: Tx<Sqlite, MyError>, /* ... */) {
+//! async fn create_user(mut tx: Tx<MyError>, /* ... */) {
 //!     /* ... */
 //! }
 //! ```
@@ -107,13 +110,15 @@
 //!
 //! See [`examples/`][examples] in the repo for more examples.
 //!
-//! [examples]: https://github.com/wasdacraic/axum-sqlx-tx/tree/master/examples
+//! [examples]: https://github.com/nbudin/axum-sea-orm-tx/tree/master/examples
 
 #![cfg_attr(doc, deny(warnings))]
 
 mod layer;
 mod slot;
 mod tx;
+
+use sea_orm::DbErr;
 
 pub use crate::{
     layer::{Layer, Service},
@@ -129,14 +134,13 @@ pub use crate::{
 ///
 /// ```
 /// use axum::response::IntoResponse;
-/// use axum_sqlx_tx::Tx;
-/// use sqlx::Sqlite;
+/// use axum_sea_orm_tx::Tx;
 ///
-/// struct MyError(axum_sqlx_tx::Error);
+/// struct MyError(axum_sea_orm_tx::Error);
 ///
-/// // The error type must implement From<axum_sqlx_tx::Error>
-/// impl From<axum_sqlx_tx::Error> for MyError {
-///     fn from(error: axum_sqlx_tx::Error) -> Self {
+/// // The error type must implement From<axum_sea_orm_tx::Error>
+/// impl From<axum_sea_orm_tx::Error> for MyError {
+///     fn from(error: axum_sea_orm_tx::Error) -> Self {
 ///         Self(error)
 ///     }
 /// }
@@ -148,25 +152,27 @@ pub use crate::{
 ///     }
 /// }
 ///
-/// async fn handler(tx: Tx<Sqlite, MyError>) {
+/// async fn handler(tx: Tx<MyError>) {
 ///     /* ... */
 /// }
 /// ```
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Indicates that the [`Layer`](crate::Layer) middleware was not installed.
-    #[error("required extension not registered; did you add the axum_sqlx_tx::Layer middleware?")]
+    #[error(
+        "required extension not registered; did you add the axum_sea_orm_tx::Layer middleware?"
+    )]
     MissingExtension,
 
     /// Indicates that [`Tx`] was extracted multiple times in a single handler/middleware.
-    #[error("axum_sqlx_tx::Tx extractor used multiple times in the same handler/middleware")]
+    #[error("axum_sea_orm_tx::Tx extractor used multiple times in the same handler/middleware")]
     OverlappingExtractors,
 
     /// A database error occurred when starting the transaction.
     #[error(transparent)]
     Database {
         #[from]
-        error: sqlx::Error,
+        error: DbErr,
     },
 }
 

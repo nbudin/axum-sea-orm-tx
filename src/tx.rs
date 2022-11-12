@@ -6,7 +6,7 @@ use axum_core::{
     extract::{FromRequest, RequestParts},
     response::IntoResponse,
 };
-use sqlx::Transaction;
+use sea_orm::{DatabaseConnection, DatabaseTransaction, DbErr, TransactionTrait};
 
 use crate::{
     slot::{Lease, Slot},
@@ -15,28 +15,28 @@ use crate::{
 
 /// An `axum` extractor for a database transaction.
 ///
-/// `&mut Tx` implements [`sqlx::Executor`] so it can be used directly with [`sqlx::query()`]
-/// (and [`sqlx::query_as()`], the corresponding macros, etc.):
+/// `&mut Tx` implements [`sea_orm::ConnectionTrait`] so it can be used directly with [`sea_orm::ConnectionTrait::execute`]
+/// (and [`sea_orm::ConnectionTrait::query_one`], the corresponding macros, etc.):
 ///
 /// ```
-/// use axum_sqlx_tx::Tx;
-/// use sqlx::Sqlite;
+/// use axum_sea_orm_tx::Tx;
+/// use sea_orm::ConnectionTrait;
 ///
-/// async fn handler(mut tx: Tx<Sqlite>) -> Result<(), sqlx::Error> {
-///     sqlx::query("...").execute(&mut tx).await?;
+/// async fn handler(mut tx: Tx) -> Result<(), sea_orm::DbErr> {
+///     tx.execute(sea_orm::Statement::from_string(tx.get_database_backend(), "...".to_string())).await?;
 ///     /* ... */
 /// #   Ok(())
 /// }
 /// ```
 ///
-/// It also implements `Deref<Target = `[`sqlx::Transaction`]`>` and `DerefMut`, so you can call
-/// methods from `Transaction` and its traits:
+/// It also implements `Deref<Target = `[`sea_orm::DatabaseTransaction`]`>` and `DerefMut`, so you can call
+/// methods from `DatabaseTransaction` and its traits:
 ///
 /// ```
-/// use axum_sqlx_tx::Tx;
-/// use sqlx::{Acquire as _, Sqlite};
+/// use axum_sea_orm_tx::Tx;
+/// use sea_orm::TransactionTrait;
 ///
-/// async fn handler(mut tx: Tx<Sqlite>) -> Result<(), sqlx::Error> {
+/// async fn handler(tx: Tx) -> Result<(), sea_orm::DbErr> {
 ///     let inner = tx.begin().await?;
 ///     /* ... */
 /// #   Ok(())
@@ -48,14 +48,13 @@ use crate::{
 ///
 /// ```
 /// use axum::response::IntoResponse;
-/// use axum_sqlx_tx::Tx;
-/// use sqlx::Sqlite;
+/// use axum_sea_orm_tx::Tx;
 ///
-/// struct MyError(axum_sqlx_tx::Error);
+/// struct MyError(axum_sea_orm_tx::Error);
 ///
-/// // The error type must implement From<axum_sqlx_tx::Error>
-/// impl From<axum_sqlx_tx::Error> for MyError {
-///     fn from(error: axum_sqlx_tx::Error) -> Self {
+/// // The error type must implement From<axum_sea_orm_tx::Error>
+/// impl From<axum_sea_orm_tx::Error> for MyError {
+///     fn from(error: axum_sea_orm_tx::Error) -> Self {
 ///         Self(error)
 ///     }
 /// }
@@ -67,14 +66,14 @@ use crate::{
 ///     }
 /// }
 ///
-/// async fn handler(tx: Tx<Sqlite, MyError>) {
+/// async fn handler(tx: Tx<MyError>) {
 ///     /* ... */
 /// }
 /// ```
 #[derive(Debug)]
-pub struct Tx<DB: sqlx::Database, E = Error>(Lease<sqlx::Transaction<'static, DB>>, PhantomData<E>);
+pub struct Tx<E = Error>(Lease<DatabaseTransaction>, PhantomData<E>);
 
-impl<DB: sqlx::Database, E> Tx<DB, E> {
+impl<E> Tx<E> {
     /// Explicitly commit the transaction.
     ///
     /// By default, the transaction will be committed when a successful response is returned
@@ -83,38 +82,38 @@ impl<DB: sqlx::Database, E> Tx<DB, E> {
     ///
     /// **Note:** trying to use the `Tx` extractor again after calling `commit` will currently
     /// generate [`Error::OverlappingExtractors`] errors. This may change in future.
-    pub async fn commit(self) -> Result<(), sqlx::Error> {
+    pub async fn commit(self) -> Result<(), DbErr> {
         self.0.steal().commit().await
     }
 }
 
-impl<DB: sqlx::Database, E> AsRef<sqlx::Transaction<'static, DB>> for Tx<DB, E> {
-    fn as_ref(&self) -> &sqlx::Transaction<'static, DB> {
+impl<E> AsRef<DatabaseTransaction> for Tx<E> {
+    fn as_ref(&self) -> &DatabaseTransaction {
         &self.0
     }
 }
 
-impl<DB: sqlx::Database, E> AsMut<sqlx::Transaction<'static, DB>> for Tx<DB, E> {
-    fn as_mut(&mut self) -> &mut sqlx::Transaction<'static, DB> {
+impl<E> AsMut<DatabaseTransaction> for Tx<E> {
+    fn as_mut(&mut self) -> &mut DatabaseTransaction {
         &mut self.0
     }
 }
 
-impl<DB: sqlx::Database, E> std::ops::Deref for Tx<DB, E> {
-    type Target = sqlx::Transaction<'static, DB>;
+impl<E> std::ops::Deref for Tx<E> {
+    type Target = DatabaseTransaction;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<DB: sqlx::Database, E> std::ops::DerefMut for Tx<DB, E> {
+impl<E> std::ops::DerefMut for Tx<E> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl<DB: sqlx::Database, B, E> FromRequest<B> for Tx<DB, E>
+impl<B, E> FromRequest<B> for Tx<E>
 where
     B: Send,
     E: From<Error> + IntoResponse,
@@ -129,7 +128,7 @@ where
         Self: 'ctx,
     {
         Box::pin(async move {
-            let ext: &mut Lazy<DB> = req
+            let ext: &mut Lazy = req
                 .extensions_mut()
                 .get_mut()
                 .ok_or(Error::MissingExtension)?;
@@ -142,20 +141,20 @@ where
 }
 
 /// The OG `Slot` – the transaction (if any) returns here when the `Extension` is dropped.
-pub(crate) struct TxSlot<DB: sqlx::Database>(Slot<Option<Slot<Transaction<'static, DB>>>>);
+pub(crate) struct TxSlot(Slot<Option<Slot<DatabaseTransaction>>>);
 
-impl<DB: sqlx::Database> TxSlot<DB> {
+impl TxSlot {
     /// Create a `TxSlot` bound to the given request extensions.
     ///
     /// When the request extensions are dropped, `commit` can be called to commit the transaction
     /// (if any).
-    pub(crate) fn bind(extensions: &mut http::Extensions, pool: sqlx::Pool<DB>) -> Self {
+    pub(crate) fn bind(extensions: &mut http::Extensions, pool: DatabaseConnection) -> Self {
         let (slot, tx) = Slot::new_leased(None);
         extensions.insert(Lazy { pool, tx });
         Self(slot)
     }
 
-    pub(crate) async fn commit(self) -> Result<(), sqlx::Error> {
+    pub(crate) async fn commit(self) -> Result<(), DbErr> {
         if let Some(tx) = self.0.into_inner().flatten().and_then(Slot::into_inner) {
             tx.commit().await?;
         }
@@ -167,13 +166,13 @@ impl<DB: sqlx::Database> TxSlot<DB> {
 ///
 /// When the transaction is started, it's inserted into the `Option` leased from the `TxSlot`, so
 /// that when `Lazy` is dropped the transaction is moved to the `TxSlot`.
-struct Lazy<DB: sqlx::Database> {
-    pool: sqlx::Pool<DB>,
-    tx: Lease<Option<Slot<Transaction<'static, DB>>>>,
+struct Lazy {
+    pool: DatabaseConnection,
+    tx: Lease<Option<Slot<DatabaseTransaction>>>,
 }
 
-impl<DB: sqlx::Database> Lazy<DB> {
-    async fn get_or_begin(&mut self) -> Result<Lease<Transaction<'static, DB>>, Error> {
+impl Lazy {
+    async fn get_or_begin(&mut self) -> Result<Lease<DatabaseTransaction>, Error> {
         let tx = if let Some(tx) = self.tx.as_mut() {
             tx
         } else {
@@ -183,102 +182,4 @@ impl<DB: sqlx::Database> Lazy<DB> {
 
         tx.lease().ok_or(Error::OverlappingExtractors)
     }
-}
-
-#[cfg(any(
-    feature = "any",
-    feature = "mssql",
-    feature = "mysql",
-    feature = "postgres",
-    feature = "sqlite"
-))]
-mod sqlx_impls {
-    use std::fmt::Debug;
-
-    use futures_core::{future::BoxFuture, stream::BoxStream};
-
-    macro_rules! impl_executor {
-        ($db:path) => {
-            impl<'c, E: Debug + Send> sqlx::Executor<'c> for &'c mut super::Tx<$db, E> {
-                type Database = $db;
-
-                #[allow(clippy::type_complexity)]
-                fn fetch_many<'e, 'q: 'e, Q: 'q>(
-                    self,
-                    query: Q,
-                ) -> BoxStream<
-                    'e,
-                    Result<
-                        sqlx::Either<
-                            <Self::Database as sqlx::Database>::QueryResult,
-                            <Self::Database as sqlx::Database>::Row,
-                        >,
-                        sqlx::Error,
-                    >,
-                >
-                where
-                    'c: 'e,
-                    Q: sqlx::Execute<'q, Self::Database>,
-                {
-                    (&mut **self).fetch_many(query)
-                }
-
-                fn fetch_optional<'e, 'q: 'e, Q: 'q>(
-                    self,
-                    query: Q,
-                ) -> BoxFuture<
-                    'e,
-                    Result<Option<<Self::Database as sqlx::Database>::Row>, sqlx::Error>,
-                >
-                where
-                    'c: 'e,
-                    Q: sqlx::Execute<'q, Self::Database>,
-                {
-                    (&mut **self).fetch_optional(query)
-                }
-
-                fn prepare_with<'e, 'q: 'e>(
-                    self,
-                    sql: &'q str,
-                    parameters: &'e [<Self::Database as sqlx::Database>::TypeInfo],
-                ) -> BoxFuture<
-                    'e,
-                    Result<
-                        <Self::Database as sqlx::database::HasStatement<'q>>::Statement,
-                        sqlx::Error,
-                    >,
-                >
-                where
-                    'c: 'e,
-                {
-                    (&mut **self).prepare_with(sql, parameters)
-                }
-
-                fn describe<'e, 'q: 'e>(
-                    self,
-                    sql: &'q str,
-                ) -> BoxFuture<'e, Result<sqlx::Describe<Self::Database>, sqlx::Error>>
-                where
-                    'c: 'e,
-                {
-                    (&mut **self).describe(sql)
-                }
-            }
-        };
-    }
-
-    #[cfg(feature = "any")]
-    impl_executor!(sqlx::Any);
-
-    #[cfg(feature = "mssql")]
-    impl_executor!(sqlx::Mssql);
-
-    #[cfg(feature = "mysql")]
-    impl_executor!(sqlx::MySql);
-
-    #[cfg(feature = "postgres")]
-    impl_executor!(sqlx::Postgres);
-
-    #[cfg(feature = "sqlite")]
-    impl_executor!(sqlx::Sqlite);
 }
