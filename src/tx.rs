@@ -6,7 +6,9 @@ use axum_core::{
     extract::{FromRequest, RequestParts},
     response::IntoResponse,
 };
-use sea_orm::{DatabaseConnection, DatabaseTransaction, DbErr, TransactionTrait};
+use sea_orm::{
+    ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, StreamTrait, TransactionTrait,
+};
 
 use crate::{
     slot::{Lease, Slot},
@@ -110,6 +112,121 @@ impl<E> std::ops::Deref for Tx<E> {
 impl<E> std::ops::DerefMut for Tx<E> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+impl<E: Sync> ConnectionTrait for Tx<E> {
+    fn get_database_backend(&self) -> sea_orm::DbBackend {
+        self.0.get_database_backend()
+    }
+
+    fn execute<'life0, 'async_trait>(
+        &'life0 self,
+        stmt: sea_orm::Statement,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<Output = Result<sea_orm::ExecResult, DbErr>>
+                + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.0.execute(stmt)
+    }
+
+    fn query_one<'life0, 'async_trait>(
+        &'life0 self,
+        stmt: sea_orm::Statement,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<Output = Result<Option<sea_orm::QueryResult>, DbErr>>
+                + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.0.query_one(stmt)
+    }
+
+    fn query_all<'life0, 'async_trait>(
+        &'life0 self,
+        stmt: sea_orm::Statement,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<Output = Result<Vec<sea_orm::QueryResult>, DbErr>>
+                + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.0.query_all(stmt)
+    }
+}
+
+impl<E: Send + Sync> StreamTrait for Tx<E> {
+    type Stream<'a> = <DatabaseTransaction as StreamTrait>::Stream<'a> where E: 'a;
+
+    fn stream<'a>(
+        &'a self,
+        stmt: sea_orm::Statement,
+    ) -> std::pin::Pin<
+        Box<dyn futures_core::Future<Output = Result<Self::Stream<'a>, DbErr>> + 'a + Send>,
+    > {
+        self.0.stream(stmt)
+    }
+}
+
+impl<E> TransactionTrait for Tx<E> {
+    fn begin<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<Output = Result<DatabaseTransaction, DbErr>>
+                + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.0.begin()
+    }
+
+    fn transaction<'life0, 'async_trait, F, T, TE>(
+        &'life0 self,
+        callback: F,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<Output = Result<T, sea_orm::TransactionError<TE>>>
+                + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        F: for<'c> FnOnce(
+                &'c DatabaseTransaction,
+            ) -> std::pin::Pin<
+                Box<dyn futures_core::Future<Output = Result<T, TE>> + Send + 'c>,
+            > + Send,
+        T: Send,
+        TE: std::error::Error + Send,
+        F: 'async_trait,
+        T: 'async_trait,
+        TE: 'async_trait,
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.0.transaction(callback)
     }
 }
 
