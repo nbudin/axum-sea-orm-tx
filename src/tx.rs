@@ -265,7 +265,10 @@ impl TxSlot {
     ///
     /// When the request extensions are dropped, `commit` can be called to commit the transaction
     /// (if any).
-    pub(crate) fn bind(extensions: &mut http::Extensions, pool: DatabaseConnection) -> Self {
+    pub(crate) fn bind<C: TransactionTrait + Send + Sync + 'static>(
+        extensions: &mut http::Extensions,
+        pool: C,
+    ) -> Self {
         let (slot, tx) = Slot::new_leased(None);
         extensions.insert(Lazy { pool, tx });
         Self(slot)
@@ -283,8 +286,8 @@ impl TxSlot {
 ///
 /// When the transaction is started, it's inserted into the `Option` leased from the `TxSlot`, so
 /// that when `Lazy` is dropped the transaction is moved to the `TxSlot`.
-struct Lazy {
-    pool: DatabaseConnection,
+struct Lazy<C: TransactionTrait = DatabaseConnection> {
+    pool: C,
     tx: Lease<Option<Slot<DatabaseTransaction>>>,
 }
 

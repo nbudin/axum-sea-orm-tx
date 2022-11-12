@@ -66,7 +66,7 @@
 //! convert errors into HTTP 500 responses, with the error's `Display` value as the response body,
 //! however it's generally not a good practice to return internal error details to clients!
 //!
-//! To make it easier to customise error handling, both [`Layer`] and [`Tx`] have a second generic
+//! To make it easier to customise error handling, both [`Layer`] and [`Tx`] have a generic
 //! type parameter, `E`, that can be used to override the error type that will be used to convert
 //! the response.
 //!
