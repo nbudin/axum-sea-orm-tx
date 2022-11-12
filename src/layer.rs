@@ -14,7 +14,7 @@ use crate::{tx::TxSlot, Error};
 ///
 /// This layer adds a lazily-initialised transaction to the [request extensions]. The first time the
 /// [`Tx`] extractor is used on a request, a connection is acquired from the configured
-/// [`sqlx::Pool`] and a transaction is started on it. The same transaction will be returned for
+/// [`sea_orm::DatabaseConnection`] and a transaction is started on it. The same transaction will be returned for
 /// subsequent uses of [`Tx`] on the same request. The inner service is then called as normal. Once
 /// the inner service responds, the transaction is committed or rolled back depending on the status
 /// code of the response.

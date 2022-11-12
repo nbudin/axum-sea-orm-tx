@@ -9,7 +9,7 @@ use sea_orm::{ConnectionTrait, Database, DbErr, Statement};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // You can use any sqlx::Pool
+    // You can use any sea_orm::DatabaseConnection
     let db = tempfile::NamedTempFile::new()?;
     let pool = Database::connect(&format!("sqlite://{}", db.path().display())).await?;
 
@@ -70,7 +70,7 @@ async fn generate_number(tx: Tx) -> Result<(StatusCode, Json<i32>), DbError> {
     Ok((status, Json(number)))
 }
 
-// An sqlx::Error wrapper that implements IntoResponse
+// A sea_orm::DbErr wrapper that implements IntoResponse
 struct DbError(DbErr);
 
 impl From<DbErr> for DbError {
