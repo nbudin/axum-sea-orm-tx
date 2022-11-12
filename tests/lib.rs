@@ -3,7 +3,7 @@ use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement, Value};
 use tempfile::NamedTempFile;
 use tower::ServiceExt;
 
-type Tx<E = axum_sea_orm_tx::Error> = axum_sea_orm_tx::Tx<E>;
+type Tx<E = axum_sea_orm_tx::Error> = axum_sea_orm_tx::Tx<DatabaseConnection, E>;
 
 #[tokio::test]
 async fn commit_on_success() {

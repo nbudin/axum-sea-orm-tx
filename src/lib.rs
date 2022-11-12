@@ -37,7 +37,7 @@
 //! use axum_sea_orm_tx::Tx;
 //! use sea_orm::{ConnectionTrait, TransactionTrait};
 //!
-//! async fn create_user(mut tx: Tx, /* ... */) {
+//! async fn create_user(mut tx: Tx<sea_orm::DatabaseConnection>, /* ... */) {
 //!     // `&mut Tx` implements `sea_orm::ConnectionTrait`
 //!     let user = tx.execute(
 //!             sea_orm::Statement::from_string(
@@ -101,7 +101,7 @@
 //! # }
 //!
 //! // Change the extractor error type
-//! async fn create_user(mut tx: Tx<MyError>, /* ... */) {
+//! async fn create_user(mut tx: Tx<sea_orm::DatabaseConnection, MyError>, /* ... */) {
 //!     /* ... */
 //! }
 //! ```
@@ -152,7 +152,7 @@ pub use crate::{
 ///     }
 /// }
 ///
-/// async fn handler(tx: Tx<MyError>) {
+/// async fn handler(tx: Tx<sea_orm::DatabaseConnection, MyError>) {
 ///     /* ... */
 /// }
 /// ```

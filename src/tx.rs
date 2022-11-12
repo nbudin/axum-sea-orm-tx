@@ -24,7 +24,7 @@ use crate::{
 /// use axum_sea_orm_tx::Tx;
 /// use sea_orm::ConnectionTrait;
 ///
-/// async fn handler(mut tx: Tx) -> Result<(), sea_orm::DbErr> {
+/// async fn handler(mut tx: Tx<sea_orm::DatabaseConnection>) -> Result<(), sea_orm::DbErr> {
 ///     tx.execute(sea_orm::Statement::from_string(tx.get_database_backend(), "...".to_string())).await?;
 ///     /* ... */
 /// #   Ok(())
@@ -38,7 +38,7 @@ use crate::{
 /// use axum_sea_orm_tx::Tx;
 /// use sea_orm::TransactionTrait;
 ///
-/// async fn handler(tx: Tx) -> Result<(), sea_orm::DbErr> {
+/// async fn handler(tx: Tx<sea_orm::DatabaseConnection>) -> Result<(), sea_orm::DbErr> {
 ///     let inner = tx.begin().await?;
 ///     /* ... */
 /// #   Ok(())
@@ -68,14 +68,14 @@ use crate::{
 ///     }
 /// }
 ///
-/// async fn handler(tx: Tx<MyError>) {
+/// async fn handler(tx: Tx<sea_orm::DatabaseConnection, MyError>) {
 ///     /* ... */
 /// }
 /// ```
 #[derive(Debug)]
-pub struct Tx<E = Error>(Lease<DatabaseTransaction>, PhantomData<E>);
+pub struct Tx<C: TransactionTrait, E = Error>(Lease<DatabaseTransaction>, PhantomData<(C, E)>);
 
-impl<E> Tx<E> {
+impl<C: TransactionTrait, E> Tx<C, E> {
     /// Explicitly commit the transaction.
     ///
     /// By default, the transaction will be committed when a successful response is returned
@@ -89,19 +89,19 @@ impl<E> Tx<E> {
     }
 }
 
-impl<E> AsRef<DatabaseTransaction> for Tx<E> {
+impl<C: TransactionTrait, E> AsRef<DatabaseTransaction> for Tx<C, E> {
     fn as_ref(&self) -> &DatabaseTransaction {
         &self.0
     }
 }
 
-impl<E> AsMut<DatabaseTransaction> for Tx<E> {
+impl<C: TransactionTrait, E> AsMut<DatabaseTransaction> for Tx<C, E> {
     fn as_mut(&mut self) -> &mut DatabaseTransaction {
         &mut self.0
     }
 }
 
-impl<E> std::ops::Deref for Tx<E> {
+impl<C: TransactionTrait, E> std::ops::Deref for Tx<C, E> {
     type Target = DatabaseTransaction;
 
     fn deref(&self) -> &Self::Target {
@@ -109,13 +109,13 @@ impl<E> std::ops::Deref for Tx<E> {
     }
 }
 
-impl<E> std::ops::DerefMut for Tx<E> {
+impl<C: TransactionTrait, E> std::ops::DerefMut for Tx<C, E> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-impl<E: Sync> ConnectionTrait for Tx<E> {
+impl<C: TransactionTrait + Sync, E: Sync> ConnectionTrait for Tx<C, E> {
     fn get_database_backend(&self) -> sea_orm::DbBackend {
         self.0.get_database_backend()
     }
@@ -172,8 +172,8 @@ impl<E: Sync> ConnectionTrait for Tx<E> {
     }
 }
 
-impl<E: Send + Sync> StreamTrait for Tx<E> {
-    type Stream<'a> = <DatabaseTransaction as StreamTrait>::Stream<'a> where E: 'a;
+impl<C: TransactionTrait + Send + Sync, E: Send + Sync> StreamTrait for Tx<C, E> {
+    type Stream<'a> = <DatabaseTransaction as StreamTrait>::Stream<'a> where E: 'a, C: 'a;
 
     fn stream<'a>(
         &'a self,
@@ -185,7 +185,7 @@ impl<E: Send + Sync> StreamTrait for Tx<E> {
     }
 }
 
-impl<E> TransactionTrait for Tx<E> {
+impl<C: TransactionTrait, E> TransactionTrait for Tx<C, E> {
     fn begin<'life0, 'async_trait>(
         &'life0 self,
     ) -> core::pin::Pin<
@@ -230,7 +230,7 @@ impl<E> TransactionTrait for Tx<E> {
     }
 }
 
-impl<B, E> FromRequest<B> for Tx<E>
+impl<C: TransactionTrait + Send + Sync + 'static, B, E> FromRequest<B> for Tx<C, E>
 where
     B: Send,
     E: From<Error> + IntoResponse,
@@ -245,7 +245,7 @@ where
         Self: 'ctx,
     {
         Box::pin(async move {
-            let ext: &mut Lazy = req
+            let ext: &mut Lazy<C> = req
                 .extensions_mut()
                 .get_mut()
                 .ok_or(Error::MissingExtension)?;
@@ -291,7 +291,7 @@ struct Lazy<C: TransactionTrait = DatabaseConnection> {
     tx: Lease<Option<Slot<DatabaseTransaction>>>,
 }
 
-impl Lazy {
+impl<C: TransactionTrait> Lazy<C> {
     async fn get_or_begin(&mut self) -> Result<Lease<DatabaseTransaction>, Error> {
         let tx = if let Some(tx) = self.tx.as_mut() {
             tx

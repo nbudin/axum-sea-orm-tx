@@ -5,7 +5,7 @@ use std::error::Error;
 use axum::{response::IntoResponse, routing::get, Json};
 use axum_sea_orm_tx::Tx;
 use http::StatusCode;
-use sea_orm::{ConnectionTrait, Database, DbErr, Statement};
+use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, Statement};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn list_numbers(tx: Tx) -> Result<Json<Vec<i32>>, DbError> {
+async fn list_numbers(tx: Tx<DatabaseConnection>) -> Result<Json<Vec<i32>>, DbError> {
     let numbers: Vec<i32> = tx
         .query_all(Statement::from_string(
             tx.get_database_backend(),
@@ -48,7 +48,7 @@ async fn list_numbers(tx: Tx) -> Result<Json<Vec<i32>>, DbError> {
     Ok(Json(numbers))
 }
 
-async fn generate_number(tx: Tx) -> Result<(StatusCode, Json<i32>), DbError> {
+async fn generate_number(tx: Tx<DatabaseConnection>) -> Result<(StatusCode, Json<i32>), DbError> {
     let number: i32 = tx
         .query_one(Statement::from_string(
             tx.get_database_backend(),
