@@ -10,10 +10,12 @@ include = [
 license = "MIT"
 name = "axum-sea-orm-tx"
 repository = "https://github.com/wasdacraic/axum-sea-orm-tx/"
-version = "0.1.0"
+version = "0.2.0"
 
 [dependencies]
-axum-core = "0.2.1"
+anyhow = "1.0.68"
+async-trait = "0.1.61"
+axum-core = "~0.3"
 bytes = "1.1.0"
 futures-core = "0.3.21"
 http = "0.2.6"
@@ -25,8 +27,8 @@ tower-layer = "0.3.1"
 tower-service = "0.3.1"
 
 [dev-dependencies]
-axum = "0.5.1"
-hyper = "0.14.17"
+axum = "~0.6"
+hyper = "*"
 sea-orm = {version = ">= 0.10", features = ["sqlx-sqlite", "runtime-tokio-rustls"]}
 tempfile = "3.3.0"
 tokio = {version = "1.17.0", features = ["macros"]}

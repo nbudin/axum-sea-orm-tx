@@ -21,12 +21,21 @@ use crate::{tx::TxSlot, Error};
 ///
 /// [`Tx`]: crate::Tx
 /// [request extensions]: https://docs.rs/http/latest/http/struct.Extensions.html
-pub struct Layer<C: TransactionTrait = DatabaseConnection, E = Error> {
+pub struct Layer<C: TransactionTrait + Clone = DatabaseConnection, E = Error> {
     pool: C,
     _error: PhantomData<E>,
 }
 
-impl<C: TransactionTrait> Layer<C> {
+impl<C: TransactionTrait + Clone, E> Clone for Layer<C, E> {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            _error: self._error,
+        }
+    }
+}
+
+impl<C: TransactionTrait + Clone> Layer<C> {
     /// Construct a new layer with the given `pool`.
     ///
     /// A connection will be obtained from the pool the first time a [`Tx`](crate::Tx) is extracted
@@ -143,7 +152,7 @@ mod tests {
 
         let app = axum::Router::new()
             .route("/", axum::routing::get(|| async { "hello" }))
-            .layer(Layer::new(pool));
+            .layer(&Layer::new(pool));
 
         axum::Server::bind(todo!()).serve(app.into_make_service());
     }

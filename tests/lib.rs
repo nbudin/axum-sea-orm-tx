@@ -87,25 +87,6 @@ async fn missing_layer() {
 }
 
 #[tokio::test]
-async fn overlapping_extractors() {
-    let (_, _, response) = build_app(|_: Tx, _: Tx| async move {}).await;
-
-    assert!(response.status.is_server_error());
-    assert_eq!(
-        response.body,
-        format!("{}", axum_sea_orm_tx::Error::OverlappingExtractors)
-    );
-}
-
-#[tokio::test]
-async fn extractor_error_override() {
-    let (_, _, response) = build_app(|_: Tx, _: Tx<MyError>| async move {}).await;
-
-    assert!(response.status.is_client_error());
-    assert_eq!(response.body, "internal server error");
-}
-
-#[tokio::test]
 async fn layer_error_override() {
     let db = NamedTempFile::new().unwrap();
     let pool = Database::connect(&format!("sqlite://{}", db.path().display()))
@@ -203,7 +184,7 @@ struct Response {
 
 async fn build_app<H, T>(handler: H) -> (NamedTempFile, DatabaseConnection, Response)
 where
-    H: axum::handler::Handler<T, axum::body::Body>,
+    H: axum::handler::Handler<T, (), axum::body::Body>,
     T: 'static,
 {
     let db = NamedTempFile::new().unwrap();

@@ -2,10 +2,9 @@
 
 use std::marker::PhantomData;
 
-use axum_core::{
-    extract::{FromRequest, RequestParts},
-    response::IntoResponse,
-};
+use async_trait::async_trait;
+use axum_core::{extract::FromRequest, response::IntoResponse};
+use http::Request;
 use sea_orm::{
     ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, StreamTrait, TransactionTrait,
 };
@@ -202,6 +201,24 @@ impl<C: TransactionTrait, E> TransactionTrait for Tx<C, E> {
         self.0.begin()
     }
 
+    fn begin_with_config<'life0, 'async_trait>(
+        &'life0 self,
+        isolation_level: Option<sea_orm::IsolationLevel>,
+        access_mode: Option<sea_orm::AccessMode>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<Output = Result<DatabaseTransaction, DbErr>>
+                + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.0.begin_with_config(isolation_level, access_mode)
+    }
+
     fn transaction<'life0, 'async_trait, F, T, TE>(
         &'life0 self,
         callback: F,
@@ -228,32 +245,55 @@ impl<C: TransactionTrait, E> TransactionTrait for Tx<C, E> {
     {
         self.0.transaction(callback)
     }
+
+    fn transaction_with_config<'life0, 'async_trait, F, T, TE>(
+        &'life0 self,
+        callback: F,
+        isolation_level: Option<sea_orm::IsolationLevel>,
+        access_mode: Option<sea_orm::AccessMode>,
+    ) -> core::pin::Pin<
+        Box<
+            dyn core::future::Future<Output = Result<T, sea_orm::TransactionError<TE>>>
+                + core::marker::Send
+                + 'async_trait,
+        >,
+    >
+    where
+        F: for<'c> FnOnce(
+                &'c DatabaseTransaction,
+            ) -> std::pin::Pin<
+                Box<dyn futures_core::Future<Output = Result<T, TE>> + Send + 'c>,
+            > + Send,
+        T: Send,
+        TE: std::error::Error + Send,
+        F: 'async_trait,
+        T: 'async_trait,
+        TE: 'async_trait,
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.0
+            .transaction_with_config(callback, isolation_level, access_mode)
+    }
 }
 
-impl<C: TransactionTrait + Send + Sync + 'static, B, E> FromRequest<B> for Tx<C, E>
+#[async_trait]
+impl<C: TransactionTrait + Send + Sync + 'static, S: Sync, B: Send + 'static, E> FromRequest<S, B>
+    for Tx<C, E>
 where
-    B: Send,
     E: From<Error> + IntoResponse,
 {
     type Rejection = E;
 
-    fn from_request<'req, 'ctx>(
-        req: &'req mut RequestParts<B>,
-    ) -> futures_core::future::BoxFuture<'ctx, Result<Self, Self::Rejection>>
-    where
-        'req: 'ctx,
-        Self: 'ctx,
-    {
-        Box::pin(async move {
-            let ext: &mut Lazy<C> = req
-                .extensions_mut()
-                .get_mut()
-                .ok_or(Error::MissingExtension)?;
+    async fn from_request(mut req: Request<B>, _state: &S) -> Result<Self, Self::Rejection> {
+        let ext: &mut Lazy<C> = req
+            .extensions_mut()
+            .get_mut()
+            .ok_or(Error::MissingExtension)?;
 
-            let tx = ext.get_or_begin().await?;
+        let tx = ext.get_or_begin().await?;
 
-            Ok(Self(tx, PhantomData))
-        })
+        Ok(Self(tx, PhantomData))
     }
 }
 
