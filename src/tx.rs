@@ -3,8 +3,9 @@
 use std::marker::PhantomData;
 
 use async_trait::async_trait;
-use axum_core::{extract::FromRequest, response::IntoResponse};
-use http::Request;
+use axum::extract::FromRequestParts;
+use axum_core::response::IntoResponse;
+use http::request::Parts;
 use sea_orm::{
     ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, StreamTrait, TransactionTrait,
 };
@@ -278,18 +279,14 @@ impl<C: TransactionTrait, E> TransactionTrait for Tx<C, E> {
 }
 
 #[async_trait]
-impl<C: TransactionTrait + Send + Sync + 'static, S: Sync, B: Send + 'static, E> FromRequest<S, B>
-    for Tx<C, E>
+impl<C: TransactionTrait + Send + Sync + 'static, S: Sync, E> FromRequestParts<S> for Tx<C, E>
 where
     E: From<Error> + IntoResponse,
 {
     type Rejection = E;
 
-    async fn from_request(mut req: Request<B>, _state: &S) -> Result<Self, Self::Rejection> {
-        let ext: &mut Lazy<C> = req
-            .extensions_mut()
-            .get_mut()
-            .ok_or(Error::MissingExtension)?;
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let ext: &mut Lazy<C> = parts.extensions.get_mut().ok_or(Error::MissingExtension)?;
 
         let tx = ext.get_or_begin().await?;
 
